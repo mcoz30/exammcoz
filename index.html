@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -609,8 +609,8 @@
     <!-- OFFLINE LOGIC MODULE -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, createUserWithEmailAndPassword, updateProfile, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- 1. CONFIGURATION ---
         const firebaseConfig = {
@@ -699,6 +699,7 @@
         on('nav-btn-calendar', 'click', () => { renderCalendar(); setView('view-calendar'); });
         on('btn-logout', 'click', () => {
             state.user = null;
+            if (snapshotUnsub) snapshotUnsub(); // Clean listener
             signOut(auth);
             setView('view-landing');
         });
@@ -711,7 +712,8 @@
         on('do-close-review', 'click', () => setView('view-student-dashboard'));
 
         // --- 5. AUTH (FIREBASE) ---
-        
+        let snapshotUnsub = null;
+
         // Listen for auth state
         onAuthStateChanged(auth, async (user) => {
             if (user) {
@@ -727,25 +729,27 @@
                     ind.className = "text-[10px] font-mono font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-200";
                 }
 
-                // FETCH DATA FROM FIREBASE
-                try {
-                    const docSnap = await getDoc(doc(db, 'users', user.uid));
+                // FETCH DATA & SETUP LISTENER
+                if (snapshotUnsub) snapshotUnsub();
+                
+                // Real-time listener for this user's data
+                snapshotUnsub = onSnapshot(doc(db, 'users', user.uid), (docSnap) => {
                     if (docSnap.exists()) {
                         const cloudData = docSnap.data().data;
-                        if(cloudData) {
+                        if(cloudData && JSON.stringify(cloudData) !== JSON.stringify(state.db)) {
                             state.db = cloudData;
-                            localStorage.setItem(DB_KEY, JSON.stringify(state.db)); // Sync back to local
-                            console.log("Loaded data from cloud");
+                            localStorage.setItem(DB_KEY, JSON.stringify(state.db)); // Sync to local
+                            console.log("Realtime Sync: UI Updated");
+                            updateUI(); // Refresh active view
                         }
                     }
-                } catch(e) {
-                    console.error("Error loading data", e);
-                }
+                });
 
                 renderDashboard();
                 setView('view-dashboard');
             } else {
                 console.log("Logged out");
+                if (snapshotUnsub) snapshotUnsub();
                 // Reset indicator
                 const ind = get('status-indicator');
                 if(ind) {
@@ -754,6 +758,22 @@
                 }
             }
         });
+
+        // Helper to refresh current view
+        function updateUI() {
+            // Check which view is active and refresh it
+            if (!get('view-dashboard').classList.contains('hidden')) {
+                renderDashboard(); 
+                if(get('tab-btn-students').classList.contains('active')) renderStudentList();
+                if(get('tab-btn-curriculum').classList.contains('active')) renderStructure();
+                if(get('tab-btn-manage').classList.contains('active')) updateSelects(); 
+                if(get('tab-btn-records').classList.contains('active')) renderRecords();
+            } else if (!get('view-courses').classList.contains('hidden')) {
+                renderCoursesView();
+            } else if (!get('view-calendar').classList.contains('hidden')) {
+                renderCalendar();
+            }
+        }
 
         // Email/Pass Login
         on('do-login', 'click', () => {
@@ -768,6 +788,30 @@
             const provider = new GoogleAuthProvider();
             signInWithPopup(auth, provider)
                 .catch(error => alert("Google Sign-In Error: " + error.message));
+        });
+
+        // Register UI Toggles
+        on('show-register', 'click', () => { hide('form-login'); show('form-register'); });
+        on('cancel-register', 'click', () => { hide('form-register'); show('form-login'); });
+
+        // Register Action
+        on('do-register', 'click', async () => {
+            const email = get('reg-user').value;
+            const pass = get('reg-pass').value;
+            const name = get('reg-name').value;
+            
+            if(!email || !pass) return alert("Please enter email and password");
+
+            try {
+                const userCredential = await createUserWithEmailAndPassword(auth, email, pass);
+                if(name) {
+                    await updateProfile(userCredential.user, { displayName: name });
+                }
+                alert("Account created! Logging in...");
+                // Auth listener will handle the rest
+            } catch (error) {
+                alert("Registration Failed: " + error.message);
+            }
         });
 
         // Student Login (Local only for now, or mock)
